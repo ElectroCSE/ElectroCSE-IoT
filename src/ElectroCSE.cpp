@@ -176,7 +176,24 @@ void ElectroCseClass::dispatch(const char* channel, const String& value) {
      * of a sketch that does not install one.
      */
     if (_onAny) {
-        _onAny(channel, ElectroCseParam(value));
+        /*
+         * ONLY ECHO WHAT THE SKETCH SAYS IT APPLIED.
+         *
+         * This used to record unconditionally, on the reasoning that a named
+         * handler's echo is unconditional too. It is not the same case: a
+         * named handler ran BECAUSE its channel matched, while a catch-all is
+         * handed every unclaimed channel and frequently cannot act on one.
+         *
+         * ElectroCSE_Generic.ino is the caller this matters for. It returns
+         * early when its pin map has not been fetched yet, when the channel is
+         * not in that map, and when the row is an input - three ordinary
+         * states, in every one of which the old code told the server the
+         * command had been applied. The dashboard cleared its "Pending" badge
+         * and showed the value as live, so a board that was not driving a
+         * single pin looked identical to one that was.
+         */
+        if (! _onAny(channel, ElectroCseParam(value))) return;
+
         recordApplied(channel, value);
 
         return;

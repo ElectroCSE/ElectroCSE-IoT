@@ -170,8 +170,21 @@ typedef void (*ElectroCseCallback)();
 /**
  * A handler for channels nothing else claimed. Gets the NAME as well as the
  * value, which is the whole reason it exists - see onAny().
+ *
+ * IT RETURNS bool, AND THE RETURN IS NOT A COURTESY. A named handler is chosen
+ * because its channel matched, so it has by definition handled what it was
+ * given. A catch-all is handed EVERY unclaimed channel and routinely cannot
+ * act - it may not know the name, or may not have been configured yet - and
+ * the library has no way to tell the difference from the outside.
+ *
+ * Return false and no echo is recorded, so the dashboard goes on showing the
+ * command as pending, which is the truth. Returning true for something the
+ * sketch ignored is worse than any error: the card clears its badge and
+ * reports the value as applied, so the one instrument anybody has says the pin
+ * moved when it did not. That defect was live, and it cost a hardware fault
+ * being diagnosed as a wiring mistake.
  */
-typedef void (*ElectroCseAnyHandler)(const char* channel, ElectroCseParam param);
+typedef bool (*ElectroCseAnyHandler)(const char* channel, ElectroCseParam param);
 
 /* ------------------------------------------------------------------------- */
 
@@ -331,9 +344,11 @@ class ElectroCseClass {
      * It is a FALLBACK, not an override: a named handler always wins, so
      * adding this to an ordinary sketch cannot change what that sketch already
      * does. The echo that clears the dashboard's "Pending" badge is recorded
-     * for this path exactly as for a named one - forgetting that is the
-     * commonest first-project bug and it must not come back through a side
-     * door.
+     * for this path too - forgetting it is the commonest first-project bug and
+     * it must not come back through a side door - but only when the handler
+     * RETURNS TRUE. See ElectroCseAnyHandler: a catch-all that ignored a
+     * channel and echoed anyway makes the dashboard report a pin that never
+     * moved.
      */
     void onAny(ElectroCseAnyHandler fn);
 

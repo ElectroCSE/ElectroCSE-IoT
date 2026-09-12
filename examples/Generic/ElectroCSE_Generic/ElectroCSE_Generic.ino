@@ -46,6 +46,21 @@
 // Running your own server? Uncomment this and put its address in.
 // #define ELECTROCSE_IOT_SERVER "http://192.168.1.50"
 
+/*
+ * Did the line ABOVE set an address, or is the library about to supply its
+ * default? Decided here because it can only be asked here: ElectroCSE.h has an
+ * `#ifndef ELECTROCSE_IOT_SERVER` fallback, so one line further down the macro
+ * is always defined and the question is unanswerable.
+ *
+ * setup() prints the answer. See the note there for why a board pointed at the
+ * wrong dashboard is otherwise completely silent.
+ */
+#ifdef ELECTROCSE_IOT_SERVER
+  #define ECSE_SERVER_FROM_SKETCH 1
+#else
+  #define ECSE_SERVER_FROM_SKETCH 0
+#endif
+
 #include <ElectroCSE.h>
 
 char ssid[] = "YOUR_WIFI_NAME";
@@ -437,6 +452,15 @@ static void applyPins() {
  * ======================================================================= */
 
 /*
+ * Declared here because onCommand() reports through it and the definition sits
+ * further down, beside the loop that is its other caller. The Arduino IDE
+ * usually generates prototypes for a .ino, but it does not do so reliably for
+ * `static` functions - and the failure is a compile error on a file the
+ * website hands out, which is the one place a build must not need fixing.
+ */
+static void reportStall(const __FlashStringHelper* why);
+
+/*
  * Every dashboard control lands here, whatever it is called.
  *
  * A normal sketch writes ELECTROCSE_LISTEN(relay) and knows the name when it is
@@ -445,12 +469,43 @@ static void applyPins() {
  * well as the value. The library still records the echo that clears the card's
  * "Pending" badge, exactly as it does for a named handler.
  */
-static void onCommand(const char* channel, ElectroCseParam param) {
-    if (!configApplied) return;         // pins are not ours to drive yet
+static bool onCommand(const char* channel, ElectroCseParam param) {
+    /*
+     * FALSE MEANS "I DID NOT DRIVE ANYTHING", and the library then records no
+     * echo - see ElectroCseAnyHandler.
+     *
+     * Every `return false` below is a state somebody can actually be in, and
+     * each one used to report success. The dashboard cleared its "Pending"
+     * badge and showed the value as applied, so a board driving nothing at all
+     * was indistinguishable from a working one - on the single screen anybody
+     * has for telling them apart. Leaving the badge up is what turns "the
+     * toggle does nothing" into a question with a visible answer.
+     */
+    if (!configApplied) {
+        reportStall(F("a command arrived before any pin map. Nothing is wired yet."));
+
+        return false;                   // pins are not ours to drive yet
+    }
 
     for (uint8_t i = 0; i < rowCount; i++) {
-        if (rows[i].mode != ECSE_OUT) continue;
         if (strcmp(rows[i].channel, channel) != 0) continue;
+
+        /*
+         * The channel is MAPPED but not as an output. Reported rather than
+         * skipped past: it means the wiring says input for something the
+         * dashboard is putting a switch on, which is a mistake on the website
+         * that nothing else would ever mention.
+         */
+        if (rows[i].mode != ECSE_OUT) {
+            Serial.print(F("generic: "));
+            Serial.print(channel);
+            Serial.print(F(" is mapped to "));
+            Serial.print(rows[i].pinName);
+            Serial.println(F(" as an input, so it cannot be switched. "
+                             "Set it to output in the wiring on the device page."));
+
+            return false;
+        }
 
         const bool on = param.asInt() != 0;
 
@@ -463,8 +518,19 @@ static void onCommand(const char* channel, ElectroCseParam param) {
         Serial.print(F(" on "));
         Serial.println(rows[i].pinName);
 
-        return;
+        return true;
     }
+
+    /*
+     * No row at all. The commonest cause is a channel with no pin against it in
+     * the wiring editor - a legitimate state for a sensor, and exactly wrong
+     * for something with an On/Off control pointed at it.
+     */
+    Serial.print(F("generic: no pin is mapped to "));
+    Serial.print(channel);
+    Serial.println(F(" - set one in the wiring on the device page."));
+
+    return false;
 }
 
 
@@ -577,7 +643,12 @@ static bool fetchConfig() {
     if (https) secure.setInsecure();
 
     HTTPClient http;
-    if (!(https ? http.begin(secure, url) : http.begin(plain, url))) return false;
+
+    if (!(https ? http.begin(secure, url) : http.begin(plain, url))) {
+        reportStall(F("the server address could not be opened. Check it is reachable from this network."));
+
+        return false;
+    }
 
     http.addHeader("Content-Type", "application/json");
     http.addHeader("Accept", "application/json");
@@ -597,7 +668,36 @@ static bool fetchConfig() {
     if (status != 200 && status != 201) {
         http.end();
 
-        if (status == 401) Serial.println(F("generic: token rejected. It is wrong, revoked, or expired."));
+        if (status == 401) {
+            Serial.println(F("generic: token rejected. It is wrong, revoked, or expired."));
+
+            return false;
+        }
+
+        /*
+         * EVERYTHING ELSE USED TO BE SILENT, and that is exactly what a board
+         * pointed at the wrong dashboard looks like: HTTPClient returns a
+         * NEGATIVE status for a connection that never completed - refused,
+         * timed out, DNS that resolved nowhere - and this returned false
+         * without a word. No error, no check-in, nothing on the device page but
+         * "offline", for ever.
+         *
+         * The URL is printed rather than described. It is the one fact that
+         * separates "the server is down" from "this board is asking the wrong
+         * server", and those two are identical in every other symptom.
+         *
+         * Not rate-limited, because the fetch itself is: once a minute at
+         * worst, which reads as a log rather than as a wall.
+         */
+        Serial.print(F("generic: POST "));
+        Serial.print(url);
+        Serial.print(F(" failed, status "));
+        Serial.println(status);
+
+        if (status < 0) {
+            Serial.println(F("generic: nothing answered at that address. It is unreachable from this "
+                             "network, or it is not where your dashboard lives."));
+        }
 
         return false;
     }
@@ -767,11 +867,72 @@ static void rollback() {
  *  setup / loop
  * ======================================================================= */
 
+/*
+ * SAY WHY NOTHING IS HAPPENING, at most once every fifteen seconds.
+ *
+ * A board stuck before its first configuration was completely silent, which is
+ * the worst failure available to a device whose only diagnostic is the Serial
+ * Monitor: no pin moves, no line appears, and "no WiFi", "wrong token" and
+ * "dead sketch" look identical from the desk. Rate-limited because this is
+ * called from loop().
+ */
+static void reportStall(const __FlashStringHelper* why) {
+    static unsigned long lastStallAt = 0;
+    const unsigned long now = millis();
+
+    if (lastStallAt != 0 && (now - lastStallAt) < 15000UL) return;
+
+    lastStallAt = now;
+
+    Serial.print(F("generic: no configuration yet - "));
+    Serial.println(why);
+}
+
 void setup() {
     Serial.begin(115200);
     delay(100);
 
     Serial.println(F("\n\nElectroCSE generic firmware"));
+
+    /*
+     * THE COMMONEST FAILURE, AND IT USED TO BE SILENT.
+     *
+     * An unreplaced token gets a 401 from the server, which IS reported - but
+     * only once the board is on WiFi and has managed a request, and by then the
+     * reader has usually decided the sketch is broken. Saying it at boot costs
+     * one comparison and names the exact edit, on the one screen that is
+     * already open while somebody flashes a board.
+     */
+    if (String(ELECTROCSE_IOT_TOKEN) == "PASTE_YOUR_TOKEN_HERE") {
+        Serial.println(F("generic: ELECTROCSE_IOT_TOKEN is still PASTE_YOUR_TOKEN_HERE."));
+        Serial.println(F("generic: paste the token from step 2 of your device page, then upload again."));
+    }
+
+    /*
+     * THE ADDRESS, PRINTED EVERY BOOT, AND THE SECOND COMMONEST FAILURE.
+     *
+     * This file exists in two places and only one of them knows where your
+     * dashboard is. The copy on the device page is substituted before it is
+     * handed over, so its #define carries that deployment's address. The copy
+     * in the Arduino IDE's example menu is this one, with that line COMMENTED
+     * OUT - so it falls back to ELECTROCSE_IOT_SERVER's default, which is the
+     * public dashboard.
+     *
+     * A board flashed from the example menu onto a self-hosted or sandbox
+     * install therefore talks to a server that has never heard of it, and the
+     * symptom is nothing whatsoever: no error, no 401, no check-in, a device
+     * page that just goes on saying offline. That is not a failure anybody can
+     * reason their way out of, and it cost a real afternoon.
+     */
+    Serial.print(F("generic: server "));
+    Serial.println(ELECTROCSE_IOT_SERVER);
+
+    if (!ECSE_SERVER_FROM_SKETCH) {
+        Serial.println(F("generic: that address came from the library, not from this sketch."));
+        Serial.println(F("generic: if your dashboard is somewhere else, this board will never reach "
+                         "it and will report nothing at all. Download this file from your device "
+                         "page instead - its copy has the right address already in it."));
+    }
 
     /*
      * NO pinMode ANYWHERE IN setup(), AND THAT IS THE BOOT-PIN RULE.
@@ -843,13 +1004,34 @@ void loop() {
     const unsigned long now = millis();
 
     /*
-     * Nothing below happens until the board has actually reached the server.
+     * WIFI, not ElectroCSE.isLive(), and the difference is a real defect fixed.
      *
-     * This single condition is the boot-pin guarantee: pins are driven only
-     * after a successful check-in, so no configuration can affect what the
-     * bootloader reads at power-on.
+     * This was `if (!ElectroCSE.isLive()) return;`, described as the boot-pin
+     * guarantee. It is not that guarantee - `configApplied` is, and it is
+     * checked separately before any pin is driven. What isLive() additionally
+     * requires, on a platform running MQTT, is a live BROKER SESSION: see
+     * ElectroCseClass::isLive(), which returns the MQTT client's connected
+     * state whenever _useMqtt is set.
+     *
+     * So a board with perfect WiFi that could not reach the broker never ran a
+     * single line of this loop. It never fetched a configuration, never applied
+     * a pin, and said nothing about why - while a GENERATED sketch on the same
+     * board worked, because its pins are compiled in and it never has to ask
+     * the server what it is wired to. That is exactly the reported shape: "I
+     * uploaded ElectroCSE_Generic.ino and it did nothing, only the sketch with
+     * the pins defined in code works."
+     *
+     * fetchConfig() is a plain HTTP POST to /api/v1/sync needing an address, a
+     * token and WiFi. WiFi is therefore the honest precondition, and a
+     * successful fetch IS the check-in the old comment was reaching for -
+     * config is applied on the strength of that fetch, never on the strength of
+     * a transport that has nothing to do with it.
      */
-    if (!ElectroCSE.isLive()) return;
+    if (WiFi.status() != WL_CONNECTED) {
+        reportStall(F("waiting for WiFi. Check the name and password, and that the network is 2.4 GHz."));
+
+        return;
+    }
 
     /*
      * Poll FASTER while a configuration is on trial.
