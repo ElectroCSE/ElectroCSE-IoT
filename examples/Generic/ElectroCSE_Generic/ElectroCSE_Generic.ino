@@ -26,15 +26,46 @@
  * for your device from the device page: it uses the same library, the same
  * dashboard and the same channels, and it can do anything C++ can.
  *
- * BOARDS: ESP8266 (NodeMCU, Wemos D1) and ESP32.
- * NOT the Nano 33 IoT / MKR 1010 - they have no LittleFS to remember a
- * configuration across a power cut, and remembering it is most of the point.
+ * BOARDS
+ * ------
+ * Every board this library supports at all:
+ *
+ *   ESP8266            NodeMCU, Wemos D1                    remembers its wiring
+ *   ESP32              ESP32, C3, S3, CAM                   remembers its wiring
+ *   WiFiNINA           Nano 33 IoT, MKR WiFi 1010,
+ *                      Nano RP2040 Connect                  asks on every boot
+ *
+ * The right-hand column is the only difference, and it is worth understanding
+ * rather than skipping, because it is not the one people expect.
+ *
+ * The ESPs have a LittleFS partition, so the last configuration that PROVED
+ * itself is written to flash. The WiFiNINA boards have no filesystem, so the
+ * same two files live in RAM and are gone at power-off - which means those
+ * boards come up with no pin map and fetch one within a few seconds of joining
+ * WiFi. That costs one round trip and nothing else: the server is the authority
+ * on the wiring either way, and a board that has to ask is a board that cannot
+ * be running something stale.
+ *
+ * What is genuinely lost is narrower than "persistence", and it is this: the
+ * count of how many times a configuration has been tried. That counter exists
+ * to break a REBOOT LOOP - a configuration that makes the board restart before
+ * the watchdog can time it out - and breaking that loop requires surviving the
+ * reboot. On an ESP it does. On a WiFiNINA board it does not, so recovery from
+ * that one case is manual: change the pin on the website, and the board picks
+ * the new map up on its next boot, before it applies anything.
+ *
+ * That case is also an ESP hazard specifically. It is D3, D4 and D8 on a
+ * NodeMCU - strapping pins the bootloader reads at power-on - and a SAMD21 or
+ * an RP2040 has no header pin that decides whether the chip boots. So the
+ * protection and the hazard are missing from the same boards.
  *
  *
  * INSTALL FIRST  (Arduino IDE -> Tools -> Manage Libraries...)
  *   ElectroCSE    - or add the ZIP from your device page
  *   ArduinoJson   by Benoit Blanchon
  *   PubSubClient  by Nick O'Leary
+ *   WiFiNINA         }  Nano 33 IoT, MKR WiFi 1010 and
+ *   ArduinoHttpClient}  Nano RP2040 Connect only
  *
  * Dashboard : https://iot.electrocse.com
  * =============================================================================
@@ -66,20 +97,71 @@
 char ssid[] = "YOUR_WIFI_NAME";
 char pass[] = "YOUR_WIFI_PASSWORD";
 
+/*
+ * WHAT EACH BOARD FAMILY BRINGS, in the three facts this sketch actually
+ * differs on: how it makes an HTTP request, how wide its ADC is, and whether
+ * it has somewhere to keep a file.
+ *
+ * Keyed on the ARCHITECTURE and never on a board name, the same rule
+ * ElectroCSE.h states for its own routing table: the thing that decides the
+ * answer is the core's API, and a list of board defines needs editing every
+ * time Arduino ships another product.
+ *
+ * ECSE_HAS_FS is a CAPABILITY, not a board test, and everything below asks it
+ * rather than asking which chip this is. That is what keeps the difference to
+ * two functions: with no filesystem the two files live in RAM, every other line
+ * in this sketch is unchanged, and the only behaviour that differs is what
+ * survives a power cut - which is stated in the header and printed at boot.
+ */
 #if defined(ESP8266)
   #include <ESP8266HTTPClient.h>
   #include <WiFiClientSecure.h>
   #include <LittleFS.h>
-  #define ECSE_FS         LittleFS
-  #define ECSE_ADC_MAX    1023
+  #define ECSE_TRANSPORT_ESP 1
+  #define ECSE_HAS_FS        1
+  #define ECSE_FS            LittleFS
+  #define ECSE_ADC_MAX       1023
 #elif defined(ESP32)
   #include <HTTPClient.h>
   #include <WiFiClientSecure.h>
   #include <LittleFS.h>
-  #define ECSE_FS         LittleFS
-  #define ECSE_ADC_MAX    4095
+  #define ECSE_TRANSPORT_ESP 1
+  #define ECSE_HAS_FS        1
+  #define ECSE_FS            LittleFS
+  #define ECSE_ADC_MAX       4095
+#elif defined(ARDUINO_ARCH_SAMD) || defined(ARDUINO_ARCH_SAM) || defined(ARDUINO_ARCH_MBED)
+  #include <WiFiNINA.h>
+  #include <ArduinoHttpClient.h>
+  #define ECSE_TRANSPORT_ESP 0
+
+  /*
+   * No filesystem, and not for want of looking.
+   *
+   * A SAMD21 has no data partition and no EEPROM; emulating one means writing
+   * to the program flash through a third-party library, which is a dependency
+   * this sketch would carry on every board to serve two. The mbed core on the
+   * Nano RP2040 Connect can mount a LittleFS over FlashIAPBlockDevice, but
+   * only after carving a region out of the same flash the sketch is running
+   * from - a decision that belongs to whoever owns the board's memory map, not
+   * to an example.
+   *
+   * So: no. The known-good configuration lives in RAM for the life of a boot,
+   * the board re-fetches after a power cut, and the one guarantee that needs
+   * flash to work is documented as absent rather than quietly broken.
+   */
+  #define ECSE_HAS_FS        0
+
+  /*
+   * 10-bit, which is the SAMD and mbed default and NOT what the chip can do.
+   * A SAMD21 will give 12 bits after analogReadResolution(12), and this sketch
+   * deliberately does not call it: the reading is reported as a percentage, so
+   * the extra two bits buy nothing a dashboard can show, and a sketch that
+   * changed a global ADC setting would change it for anything else the board
+   * is doing.
+   */
+  #define ECSE_ADC_MAX       1023
 #else
-  #error "ElectroCSE generic firmware needs an ESP8266 or an ESP32. Other boards have no LittleFS to remember a configuration across a power cut - generate a normal sketch from your device page instead."
+  #error "ElectroCSE generic firmware needs an ESP8266, an ESP32, or a WiFiNINA board (Nano 33 IoT, MKR WiFi 1010, Nano RP2040 Connect). A plain Uno/Nano/Mega has no network hardware; an UNO R4 WiFi and a Wio Terminal have radios this library does not speak to yet. Generate a normal sketch from your device page instead."
 #endif
 
 
@@ -87,8 +169,54 @@ char pass[] = "YOUR_WIFI_PASSWORD";
  *  Tunables that are NOT sent by the server
  * ======================================================================= */
 
-/* Ten usable pins on a NodeMCU, so twelve rows is already generous. */
-#define ECSE_MAX_ROWS 12
+/*
+ * WHICH BUILD OF THIS FILE IS ON THE BOARD.
+ *
+ * Reported to the dashboard on every config fetch, and it is the fact that was
+ * missing when this sketch was first debugged against real hardware. The device
+ * page could see the board was online, see it polling on schedule, and see the
+ * pin map it was being sent - and had no way at all to tell whether the sketch
+ * running was this month's or the copy somebody downloaded a fortnight ago.
+ * Every symptom of an old build is a symptom of something else as well.
+ *
+ * A DATE rather than a semantic version. This file is not released on its own;
+ * it is vendored beside the website and synced by tools/sync-firmware.sh, so
+ * the only question ever asked of it is "is this older than the fix" - which a
+ * date answers and a number nobody increments does not.
+ *
+ * A SUFFIX when it changes twice in one day, and that is not pedantry: the
+ * whole value of this string is telling two builds apart on the device page,
+ * and the first time it was needed the fix and the build it replaced were
+ * shipped the same afternoon. Two boards both honestly reporting
+ * "generic-2026-09-15" would have made the page say they agreed.
+ */
+#define ECSE_FIRMWARE_BUILD "generic-2026-09-15.6"
+
+/*
+ * ONE ROW PER MAPPABLE PIN ON THE LARGEST BOARD, and it is sized from the
+ * server's catalogue rather than guessed.
+ *
+ *   esp8266    10 pins
+ *   wifinina   18 pins
+ *   esp32      23 pins
+ *
+ * It was 12, written when a NodeMCU was the only board this ran on and "twelve
+ * is already generous" was true of it. It stopped being true the moment the
+ * ESP32 and the WiFiNINA boards were supported, and the way it stopped was
+ * silent: the rows past the ceiling are dropped, so the dashboard goes on
+ * showing a channel with a pin next to it and a toggle somebody can press,
+ * while the board has never heard of it. Nothing is wrong anywhere - the
+ * config is valid, the version matches, the board reports healthy.
+ *
+ * 24 covers the largest catalogue with one spare. The cost is about a kilobyte
+ * of RAM across rows[] and the two previous-state arrays, which is 3% of a
+ * SAMD21's and nothing at all on an ESP.
+ *
+ * Exceeding it is still possible - a device could in principle carry more
+ * channels than its board has pins - so it is still counted and REPORTED, to
+ * the dashboard as well as to the serial port. See pinSummary().
+ */
+#define ECSE_MAX_ROWS 24
 
 /*
  * How often to ask the server whether the wiring has changed.
@@ -112,7 +240,11 @@ char pass[] = "YOUR_WIFI_PASSWORD";
  */
 #define ECSE_MAX_TRIALS 3
 
-/* Where the two files live. See "LITTLEFS STRATEGY" at the bottom. */
+/*
+ * Where the two files live - in flash on an ESP, in RAM on a board with no
+ * filesystem. See "The two files" below, which is the only place that
+ * difference exists.
+ */
 #define ECSE_FILE_GOOD  "/ecse-config.json"
 #define ECSE_FILE_TRIAL "/ecse-trial.json"
 
@@ -147,7 +279,24 @@ static EcseRow  rows[ECSE_MAX_ROWS];
 static uint8_t  rowCount = 0;
 
 static uint32_t configVersion = 0;      // what is applied right now
-static uint32_t rejectedVersion = 0;    // refused after ECSE_MAX_TRIALS
+
+/*
+ * A version refused after ECSE_MAX_TRIALS, and a FLAG saying whether there is
+ * one - rather than 0 standing in for "none".
+ *
+ * Zero is not a free sentinel here. It is also what `config["version"] | 0UL`
+ * yields when the server sends a reply this sketch cannot read a version out
+ * of, and `version == rejectedVersion` is checked BEFORE anything is applied.
+ * So a single unreadable version made the board refuse every configuration
+ * from then on - silently, because a refusal at that point prints nothing,
+ * starts no trial and changes no state. The board polls for ever, perfectly
+ * online, doing nothing, and every symptom available says it is healthy.
+ *
+ * Two variables cannot collide. The flag is the authority; the number is only
+ * read when the flag is set.
+ */
+static bool     hasRejected = false;
+static uint32_t rejectedVersion = 0;
 
 /* Server-dictated, with the same floors the server applies. Defaults are only
  * what runs before the first successful fetch. */
@@ -160,9 +309,60 @@ static bool          configApplied    = false;   // pins are driven
 static unsigned long lastConfigPollAt = 0;
 static unsigned long lastSampleAt     = 0;
 
+/*
+ * WiFi signal, reported like any other reading.
+ *
+ * Not a pin, so sampleInputs() cannot carry it - it walks the configured rows
+ * and there is no row for a radio. It gets its own pair of state variables and
+ * the same two rules every other channel obeys: report on real movement, and
+ * report anyway once in a while so silence still means something.
+ *
+ * `rssi` is not a channel somebody has to add. The dashboard puts it on every
+ * device it knows about and explains it in the channel hints, so a "WiFi
+ * signal" widget is offered on a generic board whether or not anything ever
+ * fills it - and before this it was never filled: the generic firmware sent
+ * only the pins it was told about, so that widget sat empty for ever on the one
+ * firmware that cannot be edited to add it.
+ *
+ * 32767 as "never read": a valid RSSI is a small negative number, so no real
+ * sample can collide with it, and the first pass therefore always reports.
+ */
+static int           lastRssi        = 32767;
+static unsigned long lastRssiAt      = 0;
+
 /* Watchdog state. `trialSince` of 0 means nothing is on trial. */
 static unsigned long trialSince   = 0;
 static uint32_t      trialVersion = 0;
+
+/*
+ * WHY THE LAST FAILURE IS KEPT IN A VARIABLE.
+ *
+ * Everything this sketch knows about a failed fetch used to go to the Serial
+ * Monitor and nowhere else. That is the right place for somebody holding the
+ * board and the wrong place for every other situation - and it made a real bug
+ * take three rounds of "it still does not work" to find, because the one fact
+ * that would have identified it in a minute was written to a port nobody had
+ * open.
+ *
+ * So the reason rides the NEXT request. The board is already talking to the
+ * server every minute; carrying sixty bytes of "here is why I have no pin map"
+ * costs nothing and turns an invisible failure into a line on the device page.
+ *
+ * Cleared on success, so the dashboard shows a stale reason for at most one
+ * poll after the board recovers.
+ */
+static String lastFetchNote;
+
+static void setFetchNote(const String& why) {
+    // Bounded here as well as on the server. This is a diagnostic, and a
+    // diagnostic that can grow without limit is a way to fill somebody's
+    // database from a device.
+    lastFetchNote = why.length() > 110 ? why.substring(0, 110) : why;
+}
+
+static void setFetchNote(const __FlashStringHelper* why) {
+    setFetchNote(String(why));
+}
 
 /*
  * The configuration on trial, held as the raw JSON the server sent.
@@ -204,7 +404,7 @@ static bool gpioFor(const char* name, uint8_t& out) {
     }
 
     return false;
-#else
+#elif defined(ESP32)
     /*
      * ESP32 boards are silkscreened with raw GPIO numbers, which is what the
      * server's catalogue holds for them. Anything non-numeric is refused rather
@@ -222,13 +422,78 @@ static bool gpioFor(const char* name, uint8_t& out) {
 
     out = (uint8_t) gpio;
     return true;
+#else
+    /*
+     * WiFiNINA boards use plain Arduino numbering, so the server's catalogue
+     * sends "2".."13" for the digital pins and "A0".."A5" for the analog ones -
+     * and those two halves are NOT the same kind of string, which is the whole
+     * reason this branch is longer than a call to atoi().
+     *
+     * A digital pin's name IS its number. `A0` is not: it is a constant the
+     * core defines, and on a Nano 33 IoT it is 15. Reading "A0" with atoi()
+     * yields 0, which is a real and different digital pin - so the analog
+     * channel would silently read D0 and report a number that moves for the
+     * wrong reason. The table is what makes that unrepresentable.
+     *
+     * The board's own core is asked for the value, exactly as the ESP8266
+     * branch above asks it for D1 - the side that was compiled against the core
+     * is the side that knows.
+     */
+    struct Entry { const char* name; uint8_t pin; };
+
+    static const Entry analog[] = {
+        {"A0", A0}, {"A1", A1}, {"A2", A2}, {"A3", A3}, {"A4", A4}, {"A5", A5},
+    };
+
+    for (uint8_t i = 0; i < sizeof(analog) / sizeof(analog[0]); i++) {
+        if (strcmp(analog[i].name, name) == 0) { out = analog[i].pin; return true; }
+    }
+
+    if (!name[0]) return false;
+
+    for (const char* c = name; *c; c++) {
+        if (*c < '0' || *c > '9') return false;
+    }
+
+    long pin = atol(name);
+
+    /*
+     * The catalogue offers 2..13 and nothing else. 0 and 1 are the hardware
+     * serial pins the Serial Monitor is on, and driving them is how a board
+     * stops printing the diagnostics this sketch relies on to explain itself -
+     * so a hand-edited row naming one is refused here as well as being absent
+     * from the dropdown.
+     */
+    if (pin < 2 || pin > 13) return false;
+
+    out = (uint8_t) pin;
+    return true;
 #endif
 }
 
 
 /* ==========================================================================
- *  LittleFS
+ *  The two files
  * ======================================================================= */
+
+/*
+ * TWO FUNCTIONS, AND THEY ARE THE ENTIRE DIFFERENCE BETWEEN THE BOARD
+ * FAMILIES.
+ *
+ * Everything else in this sketch - the trial, the watchdog, the rollback, the
+ * refusal after three failed attempts - is written against readFile() and
+ * saveFile() and asks nothing about the hardware. So a board with no filesystem
+ * is served by keeping the same two files in RAM: every code path above and
+ * below runs unchanged, and the only thing that differs is what is still there
+ * after a power cut.
+ *
+ * The alternative was `#if ECSE_HAS_FS` scattered through promoteTrial(),
+ * rollback(), bumpTrial() and setup(). That is the shape where one of them gets
+ * missed, and a missed guard here is a board that compiles, runs, and quietly
+ * has no rollback - which is indistinguishable from one that does until the day
+ * it is needed.
+ */
+#if ECSE_HAS_FS
 
 static bool saveFile(const char* path, const String& body) {
     File f = ECSE_FS.open(path, "w");
@@ -250,6 +515,72 @@ static String readFile(const char* path) {
     return body;
 }
 
+static void removeFile(const char* path) {
+    ECSE_FS.remove(path);
+}
+
+#else
+
+/*
+ * RAM standing in for flash, on the boards that have no flash to stand in.
+ *
+ * Two named slots rather than a list, because there are exactly two paths and
+ * both are compile-time constants in this file. A map keyed on the string would
+ * be a general mechanism serving two callers, and would turn a typo in a path -
+ * which the linker cannot catch either way - into a silently separate third
+ * slot rather than into the fallthrough below, which is loud.
+ *
+ * WHAT IS LOST, precisely, and it is one thing: the trial COUNTER no longer
+ * survives a reboot. The known-good configuration not surviving costs nothing
+ * that matters, because the board asks the server for the current map within
+ * seconds of joining WiFi and the server is the authority on it anyway. The
+ * counter is different - it exists to break a reboot loop, and breaking a
+ * reboot loop is by definition something that has to outlive a reboot. See the
+ * header: the hazard it guards against is an ESP strapping-pin hazard, and
+ * these boards do not have one.
+ */
+static String ramGood;
+static String ramTrial;
+
+static String* ramSlot(const char* path) {
+    if (strcmp(path, ECSE_FILE_GOOD) == 0)  return &ramGood;
+    if (strcmp(path, ECSE_FILE_TRIAL) == 0) return &ramTrial;
+
+    return nullptr;
+}
+
+static bool saveFile(const char* path, const String& body) {
+    String* slot = ramSlot(path);
+    if (!slot) return false;
+
+    *slot = body;
+
+    /*
+     * A String assignment can fail to allocate and leaves the old value in
+     * place, which would report success while storing nothing. Cheap to check
+     * and the failure is otherwise invisible - this is the same silent-empty
+     * shape that cost three rounds of debugging in the HTTP path below.
+     */
+    return slot->length() == body.length();
+}
+
+static String readFile(const char* path) {
+    String* slot = ramSlot(path);
+
+    return slot ? *slot : String();
+}
+
+/*
+ * Deleting is what clearTrial() means on a filesystem, and an empty slot is
+ * what it means here. Declared so the one call site reads the same on both.
+ */
+static void removeFile(const char* path) {
+    String* slot = ramSlot(path);
+    if (slot) *slot = String();
+}
+
+#endif
+
 /*
  * How many times the version currently on trial has been attempted.
  *
@@ -265,7 +596,25 @@ static uint8_t bumpTrial(uint32_t version) {
     String body = readFile(ECSE_FILE_TRIAL);
 
     if (body.length() && deserializeJson(doc, body) == DeserializationError::Ok) {
-        if ((uint32_t) (doc["v"] | 0) == version) attempts = (uint8_t) (doc["n"] | 0) + 1;
+        /*
+         * `| 0UL`, NOT `| 0`, and the difference silently disabled this whole
+         * mechanism for half the versions it can ever see.
+         *
+         * A config version is a crc32, so it uses the full 32 bits and is above
+         * INT32_MAX about half the time. The default value in `variant | x`
+         * chooses the type the variant is read as - so `| 0` asks for an `int`,
+         * ArduinoJson finds the stored number does not fit one, and returns the
+         * DEFAULT. The comparison below was therefore `0 == version`, false for
+         * every large version, and `attempts` stayed 1 no matter how many times
+         * a configuration had been tried.
+         *
+         * Nothing failed. The counter was written, read back, and quietly
+         * ignored - so the crash-loop guard that ECSE_MAX_TRIALS exists to
+         * provide was absent on half of all boards, and absent exactly where it
+         * matters: a configuration that reboots the board would be retried for
+         * ever rather than refused after three attempts.
+         */
+        if ((uint32_t) (doc["v"] | 0UL) == version) attempts = (uint8_t) (doc["n"] | 0) + 1;
     }
 
     StaticJsonDocument<96> out;
@@ -280,7 +629,13 @@ static uint8_t bumpTrial(uint32_t version) {
 }
 
 static void clearTrial() {
-    ECSE_FS.remove(ECSE_FILE_TRIAL);
+    /*
+     * removeFile(), not ECSE_FS.remove(), and the indirection earns its keep:
+     * ECSE_FS does not exist on a board with no filesystem, so the direct call
+     * was the one line that would have needed an #if of its own - which is
+     * exactly the scattering the two helpers above exist to avoid.
+     */
+    removeFile(ECSE_FILE_TRIAL);
 }
 
 
@@ -317,6 +672,37 @@ static uint8_t prevGpio[ECSE_MAX_ROWS];
 static uint8_t prevCount = 0;
 static uint8_t prevMode[ECSE_MAX_ROWS];
 
+/*
+ * HOW MANY MAPPED CHANNELS THIS BOARD IS NOT DRIVING.
+ *
+ * A row is dropped for two reasons - the ceiling above, or a pin name this
+ * board's core does not define - and both were reported to the Serial Monitor
+ * and nowhere else. That is the wrong place for a fault whose entire symptom is
+ * a dashboard that looks correct: the channel is listed, its pin is listed, the
+ * toggle is live, the device is online, and pressing it does nothing. Somebody
+ * with the board on the desk finds it in a minute; somebody whose board is
+ * already in a cupboard never finds it at all.
+ *
+ * So it rides the next request, like every other reason in this sketch.
+ */
+static uint8_t droppedPins = 0;
+
+/*
+ * "3 pin(s)" - or "3 pin(s), 1 skipped", which is the half that matters.
+ *
+ * Used by the notes that report SUCCESS, deliberately. A skipped pin is not a
+ * failed fetch and must not be reported as one: the config arrived, parsed and
+ * applied, and the honest sentence is "this worked, and here is what it does
+ * not cover".
+ */
+static String pinSummary() {
+    String out = String(rowCount) + F(" pin(s)");
+
+    if (droppedPins) out += String(F(", ")) + droppedPins + F(" skipped");
+
+    return out;
+}
+
 static bool parseConfig(JsonObjectConst config) {
     JsonArrayConst pins = config["pins"];
     if (pins.isNull()) return false;
@@ -329,11 +715,21 @@ static bool parseConfig(JsonObjectConst config) {
     }
 
     rowCount = 0;
+    droppedPins = 0;
 
     for (JsonObjectConst pin : pins) {
+        /*
+         * `continue`, not `break`, and the difference is the count.
+         *
+         * Breaking out leaves the remaining rows unexamined, so the board knows
+         * it ran out of room and not by how much - and "some channels are
+         * missing" is a materially worse thing to tell somebody than "four
+         * channels are missing". Iterating an already-parsed array costs
+         * nothing.
+         */
         if (rowCount >= ECSE_MAX_ROWS) {
-            Serial.println(F("generic: too many mapped channels; the rest are ignored."));
-            break;
+            droppedPins++;
+            continue;
         }
 
         const char* channel = pin["channel"] | "";
@@ -341,6 +737,8 @@ static bool parseConfig(JsonObjectConst config) {
 
         uint8_t gpio;
         if (!*channel || !gpioFor(pinName, gpio)) {
+            droppedPins++;
+
             Serial.print(F("generic: skipping unusable pin \""));
             Serial.print(pinName);
             Serial.println(F("\" - this board has no such pin."));
@@ -358,6 +756,15 @@ static bool parseConfig(JsonObjectConst config) {
         r.mode = modeFrom(pin["mode"] | "input");
         r.lastValue = -1;
         r.lastReportAt = 0;
+    }
+
+    if (droppedPins) {
+        Serial.print(F("generic: "));
+        Serial.print(droppedPins);
+        Serial.print(F(" of "));
+        Serial.print(rowCount + droppedPins);
+        Serial.println(F(" mapped channels are NOT being driven by this board. Their cards on the "
+                         "dashboard will not respond."));
     }
 
     /* Floors applied HERE as well as on the server. Two copies of one rule is
@@ -444,6 +851,41 @@ static void applyPins() {
     Serial.print(rowCount);
     Serial.print(F(" pin(s), config version "));
     Serial.println(configVersion);
+
+    /*
+     * THE MAP ITSELF, once per apply.
+     *
+     * A count alone answers the wrong question. The one thing somebody at the
+     * desk needs is whether the board agrees with the dropdowns they just
+     * pressed - and "applied 4 pin(s)" is equally true of the right map and of
+     * a stale one with the same number of rows in it. Three short columns turn
+     * "it is not working" into "it thinks led1 is on D1 and I moved it to D6",
+     * which is an answer rather than a symptom.
+     *
+     * Only on apply, so it costs one block per wiring change rather than a line
+     * every poll.
+     */
+    for (uint8_t i = 0; i < rowCount; i++) {
+        Serial.print(F("generic:   "));
+        Serial.print(rows[i].channel);
+        Serial.print(F(" -> "));
+        Serial.print(rows[i].pinName);
+        Serial.print(F(" ("));
+
+        switch (rows[i].mode) {
+            case ECSE_OUT:        Serial.print(F("output"));       break;
+            case ECSE_IN_PULLUP:  Serial.print(F("input_pullup")); break;
+            case ECSE_ANALOG:     Serial.print(F("analog"));       break;
+            default:              Serial.print(F("input"));        break;
+        }
+
+        Serial.println(')');
+    }
+
+    if (rowCount == 0) {
+        Serial.println(F("generic: no channel on the device page has a pin against it, so this board "
+                         "has nothing to drive. Set one in the Wiring panel."));
+    }
 }
 
 
@@ -602,6 +1044,58 @@ static void sampleInputs() {
 }
 
 
+/**
+ * Report the WiFi signal, on the same terms as everything else.
+ *
+ * ── Why a deadband here too ───────────────────────────────────────────────
+ *
+ * RSSI is noisy by nature: a board sitting perfectly still on a bench moves a
+ * few dBm between samples as the radio environment shifts. Reporting every
+ * sample would write a row every five seconds for a number nobody is watching
+ * that closely - about 17,000 rows a day, for the channel least likely to be
+ * read. 3 dBm is below what changes a decision (the hints call −50 excellent
+ * and −70 fair), so anything that moves the reading between those bands still
+ * gets through.
+ *
+ * The heartbeat is the same one the pins use, and matters more here: signal
+ * strength that has not changed is exactly the case where a chart going flat
+ * and a board going missing must not look alike.
+ *
+ * Sent in dBm rather than as a percentage, unlike the analog inputs. A
+ * percentage would need a floor and a ceiling to map between, and every choice
+ * of those is a fiction - dBm is what the radio reports, what the dashboard's
+ * hint explains, and what every other sketch in this library sends, so a device
+ * moved between firmwares keeps one continuous chart.
+ */
+static void sampleRadio() {
+    const unsigned long now = millis();
+
+    if (WiFi.status() != WL_CONNECTED) return;
+
+    const int rssi = (int) WiFi.RSSI();
+
+    /*
+     * 0 is not a signal strength, it is the value several cores return when
+     * there is nothing to report yet. Sending it would put a spike at the top
+     * of the chart meaning "excellent" at the exact moment the radio could not
+     * answer.
+     */
+    if (rssi == 0) return;
+
+    const bool first = lastRssi == 32767;
+    const int  delta = rssi > lastRssi ? rssi - lastRssi : lastRssi - rssi;
+    const bool moved = delta >= 3;
+    const bool stale = (now - lastRssiAt) >= forceReportMs;
+
+    if (!first && !moved && !stale) return;
+
+    lastRssi = rssi;
+    lastRssiAt = now;
+
+    ElectroCSE.send("rssi", rssi, "dBm");
+}
+
+
 /* ==========================================================================
  *  Fetching the configuration
  * ======================================================================= */
@@ -626,14 +1120,117 @@ static void sampleInputs() {
  * which is exactly what a configuration on trial has to demonstrate. So there
  * is no separate liveness check to get wrong.
  */
-static bool fetchConfig() {
-    if (WiFi.status() != WL_CONNECTED) return false;
+/* ==========================================================================
+ *  The one request this sketch makes for itself
+ * ======================================================================= */
 
-    String url = String(ELECTROCSE_IOT_SERVER);
-    const bool https = url.indexOf("://") == -1 || url.startsWith("https://");
+/*
+ * WHY THE TRANSPORT IS A FUNCTION AND NOT INLINE IN fetchConfig()
+ *
+ * Three board families reach this sketch and they disagree about exactly one
+ * thing: how to make an HTTP request. An ESP has HTTPClient, which takes a
+ * whole URL and hands back a Stream. A WiFiNINA board has ArduinoHttpClient,
+ * which takes a host and a port apart and is driven header by header.
+ *
+ * Everything either side of the request - what to send, how to read the reply,
+ * which branch was taken and what to report - is identical, and it is the part
+ * that has been wrong four times. So it stays in one place, written once, and
+ * the eighty lines that genuinely differ are quarantined below.
+ */
 
-    if (url.indexOf("://") == -1) url = (https ? "https://" : "http://") + url;
-    url += "/api/v1/sync";
+/* `http.begin()` refused the address outright: nothing was sent and there is no
+ * HTTP status to report. A sentinel rather than a bool out-parameter, so the
+ * one caller has a single value to switch on - and far outside the range of
+ * both a real status and ArduinoHttpClient's own negative error codes. */
+#define ECSE_SYNC_NO_BEGIN (-900)
+
+/**
+ * Read `config` out of a reply that is still arriving.
+ *
+ * PARSED STRAIGHT OFF THE SOCKET, NEVER OUT OF A String, and that is a fix
+ * rather than a preference. It is worth stating in full once, here, because
+ * BOTH client libraries have the same defect with different spellings and the
+ * WiFiNINA one was about to be written the wrong way by analogy.
+ *
+ *   ESP8266HTTPClient::getString()
+ *       if (_size > 0) {
+ *           if (!_payload->reserve(_size + 1)) {
+ *               DEBUG_HTTPCLIENT(...);
+ *               return *_payload;            // <-- EMPTY STRING, no error
+ *           }
+ *       }
+ *
+ *   ArduinoHttpClient::responseBody()
+ *       if (bodyLength > 0) {
+ *           if (response.reserve(bodyLength) == 0) {
+ *               return String((const char*)NULL);   // <-- same, no error
+ *           }
+ *       }
+ *       ...
+ *       if (!response.concat((char)c)) return String((const char*)NULL);
+ *       if (bodyLength > 0 && bodyLength != response.length())
+ *           return String((const char*)NULL);
+ *
+ * Both ask the heap for the whole body as ONE contiguous block, and both hand
+ * back an empty String when that fails. An ESP8266 running WiFi, a TLS-capable
+ * client and a PubSubClient buffer fragments long before it runs out, so the
+ * request can fail while ESP.getFreeHeap() still reads comfortable; the caller
+ * cannot tell it from a server that sent nothing. ArduinoHttpClient has three
+ * such returns rather than one, and the last of them - a short read - is
+ * reported identically to a successful empty body.
+ *
+ * Reading the stream needs no such allocation: ArduinoJson pulls bytes as it
+ * parses and builds only the document. It also cannot be handed a truncated
+ * body that happens to parse, because it stops at the end of the JSON value
+ * rather than at a byte count somebody else computed.
+ */
+static DeserializationError ecseParseReply(Stream& body, JsonDocument& into) {
+#if defined(ARDUINOJSON_VERSION_MAJOR) && ARDUINOJSON_VERSION_MAJOR >= 7
+
+    /*
+     * ArduinoJson 7 grows the document on demand, so there is no size to come
+     * in under and nothing for a filter to save. Parsed plain, deliberately:
+     * this is the most-travelled path in the sketch, and on a mechanism that
+     * has now failed several times in the field the right instinct is fewer
+     * moving parts between the socket and the answer, not cleverer ones.
+     */
+    return deserializeJson(into, body);
+
+#else
+
+    /*
+     * ArduinoJson 6 has a fixed capacity, and the reply is mostly fields this
+     * sketch never reads - `transport`, `commands`, `server_time`, one of which
+     * grows with the deployment's hostname. Unfiltered, a board with ten or
+     * twelve mapped channels (which ECSE_MAX_ROWS allows) overflows and gets
+     * NoMemory, and the pins are LAST in the reply - so what is lost is exactly
+     * the part that matters, on exactly the boards doing the most with this.
+     *
+     * The filter is therefore a v6 necessity rather than an improvement, which
+     * is why v7 above does without it.
+     */
+    StaticJsonDocument<96> filter;
+    filter["config"] = true;
+
+    return deserializeJson(into, body, DeserializationOption::Filter(filter));
+
+#endif
+}
+
+/**
+ * POST the sketch's own body to /api/v1/sync and parse what comes back.
+ *
+ * Returns the HTTP status, ECSE_SYNC_NO_BEGIN, or whichever negative code the
+ * client library uses for a connection that never completed. `err` and
+ * `bodySize` are only meaningful on a 200/201; `bodySize` is -1 where the
+ * client cannot say.
+ */
+#if ECSE_TRANSPORT_ESP
+
+static int ecsePostSync(const String& origin, const String& path, const String& payload,
+                        JsonDocument& into, DeserializationError& err, int& bodySize) {
+    const String url = origin + path;
+    const bool https = origin.startsWith("https://");
 
     WiFiClientSecure secure;
     WiFiClient plain;
@@ -644,43 +1241,241 @@ static bool fetchConfig() {
 
     HTTPClient http;
 
-    if (!(https ? http.begin(secure, url) : http.begin(plain, url))) {
-        reportStall(F("the server address could not be opened. Check it is reachable from this network."));
-
-        return false;
-    }
+    if (!(https ? http.begin(secure, url) : http.begin(plain, url))) return ECSE_SYNC_NO_BEGIN;
 
     http.addHeader("Content-Type", "application/json");
     http.addHeader("Accept", "application/json");
     http.addHeader("Authorization", String("Bearer ") + ELECTROCSE_IOT_TOKEN);
     http.setTimeout(15000);
 
-    /* No readings - the library sends those. This carries the version and
-     * nothing else, which is what makes the usual reply about 120 bytes. */
-    StaticJsonDocument<64> body;
-    body["config_version"] = configVersion;
+    /*
+     * HTTP/1.0, AND IT IS THE FIX RATHER THAN A PREFERENCE.
+     *
+     * This asks the server for the simplest framing HTTP has: no chunked
+     * transfer encoding, no keep-alive, one response then the connection
+     * closes. Both of the things it switches off were in the path, and both
+     * fail in the same direction - quietly, with an empty or partial body and
+     * a 200 in the server's log.
+     *
+     *   chunked      PHP-FPM streams, so nginx frames the reply in
+     *                length-prefixed pieces. getString() reassembles them, and
+     *                deserializeJson() reading a STREAM cannot - which is why
+     *                this line and the stream parse are one change and not two.
+     *                Under HTTP/1.0 a server may not chunk at all.
+     *
+     *   keep-alive   leaves the socket open afterwards, so the end of the body
+     *                is known only from its length. Every disagreement about
+     *                that length is a read that hangs or stops early.
+     *
+     * The cost is one TCP connection per minute, which is what this was doing
+     * anyway - http.end() follows every fetch.
+     *
+     * ArduinoHttpClient has no equivalent switch and does not need one: it
+     * decodes chunked framing itself, in read(), so its stream is already
+     * dechunked by the time ArduinoJson sees it.
+     */
+    http.useHTTP10(true);
 
-    String encoded;
-    serializeJson(body, encoded);
-
-    const int status = http.POST(encoded);
+    const int status = http.POST(payload);
 
     if (status != 200 && status != 201) {
         http.end();
 
+        return status;
+    }
+
+    err = ecseParseReply(http.getStream(), into);
+    bodySize = http.getSize();
+
+    http.end();
+
+    return status;
+}
+
+#else
+
+static int ecsePostSync(const String& origin, const String& path, const String& payload,
+                        JsonDocument& into, DeserializationError& err, int& bodySize) {
+    String   host;
+    uint16_t port;
+    bool     tls;
+
+    /*
+     * The LIBRARY's splitter, not a second copy written here.
+     *
+     * It is `static` at namespace scope in ElectroCSE_WiFiNINA.h, so this
+     * translation unit already has it. Writing another would mean two answers
+     * to "is a bare hostname TLS?" - the contract says yes, and a sketch that
+     * disagreed with the library it is built on would talk to port 80 for its
+     * pin map and 443 for everything else, against a server that answers both.
+     */
+    ecseSplitServer(origin, host, port, tls);
+
+    /*
+     * BOTH CLIENTS ARE CONSTRUCTED AND ONE IS USED, and the declaration has to
+     * be here rather than inside the branch.
+     *
+     * HttpClient holds a Client REFERENCE, so whichever it is given has to
+     * outlive the whole request. A client created inside an if() is destroyed
+     * at the closing brace, which presents as a connection that closes
+     * mid-reply - a 200 with a body that stops partway, i.e. the exact failure
+     * everything above is written to avoid. They are stack objects with no
+     * constructor side effects, so the unused one costs a few bytes.
+     *
+     * TLS IS A CLASS HERE, NOT A MODE. There is no setInsecure(): WiFiSSLClient
+     * validates against the root certificates burned into the NINA module's own
+     * firmware, and cannot be told not to. A self-hosted dashboard on https
+     * with a private or self-signed certificate is therefore unreachable from
+     * these boards - it fails at connect, before any of this sketch's
+     * diagnostics can see a status - and http is the honest answer on a LAN.
+     * The ESP branch's setInsecure() has no counterpart to port.
+     */
+    WiFiSSLClient secure;
+    WiFiClient    plain;
+
+    HttpClient http = tls ? HttpClient(secure, host.c_str(), port)
+                          : HttpClient(plain, host.c_str(), port);
+
+    /*
+     * The timeout is load-bearing twice over. It bounds the connect, and it is
+     * also what ArduinoJson's stream reader inherits - Stream::readBytes()
+     * blocks on _timeout - so a reply that stops halfway ends as a parse error
+     * fifteen seconds later rather than as a board that never returns from
+     * loop().
+     */
+    http.setTimeout(15000);
+
+    /*
+     * Assembled header by header, because ArduinoHttpClient has no "POST this
+     * body with these headers" call.
+     *
+     * Content-Length is the line that matters. Leave it out and the request is
+     * still well-formed and still answered 200 - the server reads an empty
+     * body, so `config_version` is absent, so it sends the full map every time
+     * and the board is told it is permanently out of date. There is no error
+     * anywhere to find.
+     */
+    http.beginRequest();
+    http.post(path);
+    http.sendHeader("Content-Type", "application/json");
+    http.sendHeader("Accept", "application/json");
+    http.sendHeader("Content-Length", payload.length());
+    http.sendHeader("Authorization", String("Bearer ") + ELECTROCSE_IOT_TOKEN);
+    http.beginBody();
+    http.print(payload);
+    http.endRequest();
+
+    const int status = http.responseStatusCode();
+
+    if (status != 200 && status != 201) {
+        http.stop();
+
+        return status;
+    }
+
+    /*
+     * The headers have to be consumed before the body is a body.
+     *
+     * HttpClient::read() returns header bytes until this is called; handing the
+     * object to ArduinoJson without it parses "HTTP/1.1 200 OK" as JSON and
+     * fails with InvalidInput on a reply that is perfectly correct. The ESP
+     * branch has no counterpart because HTTPClient::getStream() is already
+     * positioned at the body.
+     */
+    http.skipResponseHeaders();
+
+    bodySize = http.contentLength();
+    err = ecseParseReply(http, into);
+
+    http.stop();
+
+    return status;
+}
+
+#endif
+
+
+static bool fetchConfig() {
+    if (WiFi.status() != WL_CONNECTED) return false;
+
+    /*
+     * Built once, here, and handed to the transport in two pieces.
+     *
+     * The ORIGIN and the PATH are separate because the two client libraries
+     * want them differently - HTTPClient takes a whole URL, ArduinoHttpClient
+     * takes a host, a port and a path - and joining them in one branch only to
+     * split them again in the other is how the two drift. `url` below is for
+     * the error message and nothing else.
+     */
+    String origin = String(ELECTROCSE_IOT_SERVER);
+
+    if (origin.indexOf("://") == -1) origin = "https://" + origin;
+
+    while (origin.endsWith("/")) origin = origin.substring(0, origin.length() - 1);
+
+    const String path = "/api/v1/sync";
+    const String url  = origin + path;
+
+    /*
+     * No readings - the library sends those. This carries the version this
+     * board is running, plus which build of this file is running it.
+     *
+     * The build string rides THIS request rather than the library's check-in
+     * because this request is the one a generic board always makes: on an MQTT
+     * deployment the library stops checking in over HTTP entirely, so a `meta`
+     * block sent there would reach the dashboard on half the estate and never
+     * on the other half - the same trap documented above fetchConfig().
+     */
+    StaticJsonDocument<256> body;
+    body["config_version"] = configVersion;
+    body["meta"]["firmware_version"] = ECSE_FIRMWARE_BUILD;
+
+    /*
+     * Why the LAST attempt failed, if it did. Sent before this attempt is made,
+     * which is the only order that works: a board that cannot read the reply
+     * cannot report that it could not read the reply in the same breath.
+     */
+    if (lastFetchNote.length()) body["meta"]["note"] = lastFetchNote;
+
+    String encoded;
+    serializeJson(body, encoded);
+
+    /*
+     * ONLY `config` IS KEPT on ArduinoJson 6, and that is a correctness fix
+     * rather than a saving - see ecseParseReply(). The document is declared
+     * here because it has to outlive the call.
+     */
+    StaticJsonDocument<1536> reply;
+
+    DeserializationError err = DeserializationError::Ok;
+    int bodySize = -1;
+
+    const int status = ecsePostSync(origin, path, encoded, reply, err, bodySize);
+
+    if (status == ECSE_SYNC_NO_BEGIN) {
+        setFetchNote(F("could not open the server address"));
+        reportStall(F("the server address could not be opened. Check it is reachable from this network."));
+
+        return false;
+    }
+
+    if (status != 200 && status != 201) {
         if (status == 401) {
+            setFetchNote(F("token rejected (401)"));
             Serial.println(F("generic: token rejected. It is wrong, revoked, or expired."));
 
             return false;
         }
 
+        setFetchNote(String(F("HTTP status ")) + status);
+
         /*
          * EVERYTHING ELSE USED TO BE SILENT, and that is exactly what a board
-         * pointed at the wrong dashboard looks like: HTTPClient returns a
-         * NEGATIVE status for a connection that never completed - refused,
-         * timed out, DNS that resolved nowhere - and this returned false
-         * without a word. No error, no check-in, nothing on the device page but
-         * "offline", for ever.
+         * pointed at the wrong dashboard looks like: both client libraries
+         * return a NEGATIVE status for a connection that never completed -
+         * refused, timed out, DNS that resolved nowhere - and this returned
+         * false without a word. No error, no check-in, nothing on the device
+         * page but "offline", for ever.
          *
          * The URL is printed rather than described. It is the one fact that
          * separates "the server is down" from "this board is asking the wrong
@@ -702,34 +1497,143 @@ static bool fetchConfig() {
         return false;
     }
 
-    StaticJsonDocument<1536> reply;
-    const DeserializationError err = deserializeJson(reply, http.getString());
-    http.end();
-
+    /*
+     * EVERY FAILURE FROM HERE IS REPORTED TWICE - to the Serial Monitor, and to
+     * the dashboard on the next poll.
+     *
+     * The Serial half is free and is the right answer for somebody sitting at
+     * the board. It is also the half nobody has when the board is already in a
+     * cupboard, on a roof, or three rooms away - and this specific failure took
+     * three rounds of "it still does not work" to pin down precisely because
+     * the only place it was ever written down was a serial port nobody had open.
+     *
+     * `lastFetchNote` rides the next request, so the device page can say what
+     * happened without anybody plugging in a cable. It is a diagnostic and
+     * carries no authority: the server records it as a claim by the board.
+     */
     if (err == DeserializationError::NoMemory) {
-        Serial.println(F("generic: config too large to parse. Map fewer channels, or raise the document size."));
+        setFetchNote(F("out of memory parsing the pin map"));
+
+        Serial.println(F("generic: pin map too large to parse. Map fewer channels, or free some heap."));
         return false;
     }
 
-    if (err != DeserializationError::Ok) return false;
+    /*
+     * THIS USED TO BE A BARE `return false`, AND IT IS THE WORST PLACE IN THE
+     * SKETCH TO SAY NOTHING.
+     *
+     * Everything upstream of here is visible: a bad token is a 401 and is
+     * printed, an unreachable server is a negative status and is printed. A
+     * reply that arrives and cannot be read produced no output at all - and the
+     * board carries on polling once a minute for ever, perfectly online, with
+     * whatever pin map it already had. On a board that has never managed a
+     * first fetch, that is no pin map at all: the dashboard shows it online,
+     * the wiring panel shows the wiring saved, and not one pin is driven.
+     */
+    if (err != DeserializationError::Ok) {
+        setFetchNote(String(F("reply unreadable: ")) + err.c_str());
 
+        Serial.print(F("generic: the server answered 200 but the reply could not be read - "));
+        Serial.println(err.c_str());
+        Serial.print(F("generic: Content-Length was "));
+        Serial.println(bodySize);
+
+        if (bodySize == 0) {
+            Serial.println(F("generic: an empty reply usually means something between this board and "
+                             "the dashboard closed the connection - a proxy, or a redirect to https."));
+        }
+
+        return false;
+    }
+
+    /*
+     * The note stops being a FAULT report here and becomes an OUTCOME report.
+     *
+     * Cleared at this point so nothing below inherits the reason the last
+     * attempt failed - every branch from here sets its own, including the two
+     * that mean everything is fine. That is deliberate: "the board is running
+     * config N with 2 pins" is the sentence that was missing, and a channel
+     * that only ever carries bad news cannot say it.
+     */
+    lastFetchNote = String();
+
+    /*
+     * EVERY REMAINING EARLY RETURN REPORTS WHAT WAS ACTUALLY PARSED.
+     *
+     * Up to here a failure is a failure and says so. Below here they are
+     * DECISIONS - "nothing to do", "no map in this reply", "already current" -
+     * and each of them looked identical from the outside: the board polls on
+     * schedule, drives nothing, and reports no problem, because by its own
+     * lights there isn't one.
+     *
+     * That is the shape that cost three rounds of "it still does not work".
+     * The reply parsed perfectly every time; what could not be seen from
+     * anywhere was which branch it then took. So the branch is named, and where
+     * the answer depends on the document's contents the document goes with it -
+     * truncated, because this rides a request every minute and is a diagnostic
+     * rather than a channel.
+     */
     JsonObjectConst config = reply["config"];
-    if (config.isNull()) return true;          // reached the server; nothing to do
+
+    if (config.isNull()) {
+        String doc;
+        serializeJson(reply, doc);
+
+        setFetchNote(String(F("no config in reply: ")) + doc.substring(0, 70));
+
+        Serial.print(F("generic: the reply had no config block. Document was: "));
+        Serial.println(doc.substring(0, 200));
+
+        return true;
+    }
 
     const uint32_t version = config["version"] | 0UL;
 
     /* Already running it. This is the ordinary case, every minute, for ever. */
-    if (version == configVersion && configApplied) return true;
+    if (version == configVersion && configApplied) {
+        setFetchNote(String(F("running config ")) + version + F(" (") + pinSummary() + F(")"));
+        return true;
+    }
+
+    /*
+     * A version with no version in it. Reported rather than passed over: it
+     * means the server answered, the reply parsed, and the one number this
+     * whole mechanism turns on was missing or unreadable - which is a fault at
+     * one end or the other and is invisible from both.
+     */
+    if (version == 0) {
+        setFetchNote(F("reply carried no usable config version"));
+
+        Serial.println(F("generic: the reply had no usable config version in it."));
+        return true;
+    }
 
     /* A version that has already reboot-looped this board. Refused until
      * somebody changes the wiring, which changes the version. */
-    if (version == rejectedVersion) return true;
+    if (hasRejected && version == rejectedVersion) {
+        setFetchNote(String(F("refusing config ")) + version + F(" - it failed too many times"));
+        return true;
+    }
 
     JsonArrayConst pins = config["pins"];
 
     /* Version moved but the server sent no map: it believed we were current.
-     * Ask again next time with a version we certainly do not hold. */
+     * Ask again next time with a version we certainly do not hold.
+     *
+     * Announced rather than done quietly. Reaching here twice running is a
+     * disagreement between this board and the server about what it is running,
+     * and the zeroing is what breaks the deadlock - but if it ever fails to,
+     * the board polls for ever with nothing to show for it and this line is the
+     * only evidence the loop is happening at all. */
     if (pins.isNull()) {
+        String doc;
+        serializeJson(config, doc);
+
+        setFetchNote(String(F("config had no pins: ")) + doc.substring(0, 70));
+
+        Serial.print(F("generic: the server sent a version but no pin map. Config was: "));
+        Serial.println(doc.substring(0, 200));
+
         configVersion = 0;
         return true;
     }
@@ -737,6 +1641,7 @@ static bool fetchConfig() {
     const uint8_t attempts = bumpTrial(version);
 
     if (attempts > ECSE_MAX_TRIALS) {
+        hasRejected = true;
         rejectedVersion = version;
 
         Serial.print(F("generic: config version "));
@@ -748,10 +1653,15 @@ static bool fetchConfig() {
         return true;
     }
 
-    if (!parseConfig(config)) return true;
+    if (!parseConfig(config)) {
+        setFetchNote(F("the pin map could not be read out of the config"));
+        return true;
+    }
 
     configVersion = version;
     applyPins();
+
+    setFetchNote(String(F("applied config ")) + version + F(" (") + pinSummary() + F(", on trial)"));
 
     /* On trial from here until the next successful fetch. */
     trialVersion = version;
@@ -892,7 +1802,8 @@ void setup() {
     Serial.begin(115200);
     delay(100);
 
-    Serial.println(F("\n\nElectroCSE generic firmware"));
+    Serial.print(F("\n\nElectroCSE generic firmware, build "));
+    Serial.println(F(ECSE_FIRMWARE_BUILD));
 
     /*
      * THE COMMONEST FAILURE, AND IT USED TO BE SILENT.
@@ -966,9 +1877,28 @@ void setup() {
      * just has to be online to be configured, which is said plainly rather than
      * left to be discovered as "my pins reset when the power blipped".
      */
+#if ECSE_HAS_FS
+
     if (!ECSE_FS.begin()) {
         Serial.println(F("generic: no filesystem. The board still runs, but it must be online to be configured."));
     }
+
+#else
+
+    /*
+     * SAID EVERY BOOT, and it is not noise.
+     *
+     * This board keeps its configuration in RAM, so every boot starts with no
+     * pin map and fetches one. That is fine and is the design - but it is also
+     * indistinguishable, from the outside, from a board that has lost its
+     * settings; somebody watching an LED come back on a few seconds late needs
+     * to know which of the two they are looking at before they start
+     * diagnosing the wrong one.
+     */
+    Serial.println(F("generic: this board has no filesystem, so it asks the server for its wiring "
+                     "on every boot. That takes a few seconds after WiFi and needs no action."));
+
+#endif
 
     /*
      * Read the trial counter BEFORE connecting, so a configuration that
@@ -984,7 +1914,8 @@ void setup() {
             const uint32_t v = doc["v"] | 0UL;
             const uint8_t  n = doc["n"] | 0;
 
-            if (n >= ECSE_MAX_TRIALS) {
+            if (n >= ECSE_MAX_TRIALS && v != 0) {
+                hasRejected = true;
                 rejectedVersion = v;
 
                 Serial.print(F("generic: config version "));
@@ -1074,11 +2005,58 @@ void loop() {
         if (reached && trialBefore != 0 && trialSince == trialBefore) promoteTrial();
     }
 
-    if (trialSince != 0 && (now - trialSince) >= watchdogMs) rollback();
+    /*
+     * THE WATCHDOG READS millis() FRESH, AND NEVER THE `now` ABOVE.
+     *
+     * This line was `(now - trialSince) >= watchdogMs`, and it rolled back
+     * every configuration in the SAME loop iteration that applied it.
+     *
+     * `now` is read at the top of loop(). fetchConfig() then runs - a whole
+     * HTTP request, a few hundred milliseconds - and sets `trialSince` to a
+     * millis() from AFTER that. So `trialSince` is LATER than `now`, the
+     * unsigned subtraction underflows to about four billion, and the comparison
+     * against 60000 passes instantly. The trial was born already expired.
+     *
+     * What that looked like from outside, for four rounds of debugging: the
+     * board fetched the map on schedule, applied it, and released every pin
+     * again microseconds later, before the next statement could sample an input
+     * or the next command could drive an output. rollback() with no known-good
+     * file - which is every board that has never completed a trial, i.e. all of
+     * them, because promotion needs a second fetch that this made unreachable -
+     * sets `rowCount = 0`, `configApplied = false` and `configVersion = 0`.
+     * So the next poll asked from scratch, applied, and was rolled back again,
+     * once a minute, for ever. Every signal said healthy: online, polling,
+     * 200s, a valid pin map arriving each time. No pin ever moved.
+     *
+     * The identical trap is written up twelve lines above, for the PROMOTE
+     * path, where it was found first and fixed by comparing `trialSince` to
+     * itself rather than doing arithmetic on it. The rollback line one
+     * statement below kept the bug the note describes.
+     *
+     * millis() is monotonic and `trialSince` is always a millis() already
+     * taken, so reading it fresh here cannot underflow: the difference is a
+     * real elapsed time or zero.
+     */
+    if (trialSince != 0) {
+        const unsigned long trialAge = millis() - trialSince;
+
+        if (trialAge >= watchdogMs) rollback();
+    }
 
     /* Inputs. The floor is enforced here as well as on the server. */
     if (configApplied && (now - lastSampleAt) >= sampleIntervalMs) {
         lastSampleAt = now;
         sampleInputs();
+
+        /*
+         * NOT gated on `configApplied` in spirit - it shares the timer only.
+         *
+         * The radio needs no pin map, so a board that has never managed to
+         * fetch one could report its signal perfectly well. It is called from
+         * inside this branch anyway because a board with no configuration is
+         * usually a board that cannot reach the server either, and a second
+         * timer for one channel is not worth the duplication.
+         */
+        sampleRadio();
     }
 }
