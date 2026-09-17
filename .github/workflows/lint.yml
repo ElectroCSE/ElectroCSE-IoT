@@ -1,0 +1,26 @@
+# The same check the Arduino Library Manager runs when a library is submitted,
+# and the same one it re-runs on every release afterwards.
+#
+# --compliance strict rather than the default: "specification" passes things
+# the registry merely tolerates, and a library that is only tolerated today is
+# one that fails on some future tightening, at the moment somebody is trying to
+# cut a release rather than at the moment the mistake was made.
+name: Lint
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  arduino-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: arduino/arduino-lint-action@v2
+        with:
+          library-manager: submit
+          compliance: strict
+          project-type: library

@@ -308,6 +308,7 @@ inline void ElectroCseClass::mqttFlush() {
          * behaving differently on two deployments, which is precisely what this
          * library exists to prevent.
          */
+        ELECTROCSE_JSON_QUIET_BEGIN
         StaticJsonDocument<128> doc;
 
         if (q.isString) doc["value"] = q.value;
@@ -317,6 +318,7 @@ inline void ElectroCseClass::mqttFlush() {
 
         char body[128];
         size_t len = serializeJson(doc, body, sizeof(body));
+        ELECTROCSE_JSON_QUIET_END
 
         char topic[ELECTROCSE_MQTT_PREFIX_LEN + 40];
         snprintf(topic, sizeof(topic), "%s/up/%s", _mqttPrefix, q.channel);

@@ -241,13 +241,20 @@ broken when it isn't.
 ### PlatformIO
 
 ```ini
-lib_deps =
-    electrocse/ElectroCSE
-    bblanchon/ArduinoJson
-    knolleary/PubSubClient
-    ; WiFiNINA boards only
-    arduino-libraries/WiFiNINA
-    arduino-libraries/ArduinoHttpClient
+lib_deps = electrocse/ElectroCSE
+```
+
+That is the whole of it. `library.json` declares the dependencies and which
+platforms each one belongs to, so PlatformIO installs ArduinoJson and
+PubSubClient everywhere and adds WiFiNINA and ArduinoHttpClient only on the
+boards that need a co-processor radio — unlike the Arduino Library Manager,
+which has no way to express that and installs all four on every board.
+
+*Not in the registry yet?* Point it at the repository instead, which needs no
+registration and pulls the same `library.json`:
+
+```ini
+lib_deps = https://github.com/electrocse/ElectroCSE-IoT.git
 ```
 
 ---
@@ -635,6 +642,7 @@ src/
 ├── ElectroCSE_ESP.h        ESP8266 / ESP32 radio
 ├── ElectroCSE_WiFiNINA.h   Nano 33 IoT / MKR 1010 / Nano RP2040 radio
 ├── ElectroCSE_Mqtt.h       the MQTT protocol, shared by every board
+├── ElectroCSE_Json.h       the ArduinoJson 6/7 seam — why the stack, not the heap
 └── ElectroCSE.cpp          the shared half, compiled once per sketch
 
 examples/
@@ -642,6 +650,12 @@ examples/
 ├── ESP32/{01_Basic_Blink, 02_Moderate_LDR_Relay, 03_Advanced_Servo_Dashboard}
 ├── WiFiNINA/{01_Basic_Blink, 02_Moderate_LDR_Relay, 03_Advanced_Servo_Dashboard}
 └── Generic/ElectroCSE_Generic
+
+library.properties          Arduino Library Manager
+library.json                PlatformIO
+keywords.txt                IDE syntax colouring
+CHANGELOG.md                what changed, and in which version
+.github/workflows/          every example compiled on every board, per push
 ```
 
 `ElectroCSE.h` contains no code — it looks at what the IDE selected and includes
@@ -699,6 +713,7 @@ network hardware. The build stops with a message saying so.
 - **Support** — [support.electrocse.com](https://support.electrocse.com)
 - **Python client for Raspberry Pi** — [ElectroCSE-IoT-Python](https://github.com/electrocse/ElectroCSE-IoT-Python)
 - **Report a bug** — [Issues](https://github.com/electrocse/ElectroCSE-IoT/issues)
+- **What changed** — [CHANGELOG.md](CHANGELOG.md)
 
 ## Licence
 

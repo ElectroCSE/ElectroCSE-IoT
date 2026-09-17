@@ -178,8 +178,10 @@ inline bool ElectroCseClass::checkIn() {
          * silently truncates, so the symptom would be a board that ignores the
          * broker it was just told about and polls for ever.
          */
+        ELECTROCSE_JSON_QUIET_BEGIN
         StaticJsonDocument<1024> reply;
         DeserializationError err = deserializeJson(reply, http.getString());
+        ELECTROCSE_JSON_QUIET_END
 
         /*
          * NoMemory is called out by name because it fails in the most

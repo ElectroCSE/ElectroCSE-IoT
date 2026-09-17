@@ -1,0 +1,65 @@
+{
+  "$schema": "https://raw.githubusercontent.com/platformio/platformio-core/develop/platformio/assets/schema/library.json",
+  "name": "ElectroCSE",
+  "version": "0.1.0",
+  "description": "Connect an ESP8266, ESP32 or WiFiNINA board to your ElectroCSE IoT dashboard in a dozen lines. Sends sensor readings up and brings switches and sliders back down over a single adaptive call, and moves between HTTP and MQTT because the server said so rather than because the sketch did.",
+  "keywords": "iot, dashboard, esp32, esp8266, wifinina, mqtt, http, telemetry, education",
+  "homepage": "https://iot.electrocse.com",
+  "license": "MIT",
+  "authors": [
+    {
+      "name": "ElectroCSE",
+      "email": "info@electrocse.com",
+      "url": "https://electrocse.com",
+      "maintainer": true
+    }
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/electrocse/ElectroCSE-IoT.git"
+  },
+  "frameworks": "arduino",
+  "platforms": [
+    "espressif8266",
+    "espressif32",
+    "atmelsam",
+    "raspberrypi"
+  ],
+  "headers": "ElectroCSE.h",
+  "export": {
+    "exclude": [
+      ".github",
+      "docs"
+    ]
+  },
+  "dependencies": [
+    {
+      "name": "ArduinoJson",
+      "owner": "bblanchon",
+      "version": ">=6.21.0,<8.0.0"
+    },
+    {
+      "name": "PubSubClient",
+      "owner": "knolleary",
+      "version": "^2.8"
+    },
+    {
+      "name": "WiFiNINA",
+      "owner": "arduino-libraries",
+      "version": "^1.8",
+      "platforms": [
+        "atmelsam",
+        "raspberrypi"
+      ]
+    },
+    {
+      "name": "ArduinoHttpClient",
+      "owner": "arduino-libraries",
+      "version": "^0.6",
+      "platforms": [
+        "atmelsam",
+        "raspberrypi"
+      ]
+    }
+  ]
+}

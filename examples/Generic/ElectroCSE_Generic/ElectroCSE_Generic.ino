@@ -590,7 +590,9 @@ static void removeFile(const char* path) {
  * lost by exactly the failure it exists to detect.
  */
 static uint8_t bumpTrial(uint32_t version) {
+    ELECTROCSE_JSON_QUIET_BEGIN
     StaticJsonDocument<96> doc;
+    ELECTROCSE_JSON_QUIET_END
     uint8_t attempts = 1;
 
     String body = readFile(ECSE_FILE_TRIAL);
@@ -617,7 +619,9 @@ static uint8_t bumpTrial(uint32_t version) {
         if ((uint32_t) (doc["v"] | 0UL) == version) attempts = (uint8_t) (doc["n"] | 0) + 1;
     }
 
+    ELECTROCSE_JSON_QUIET_BEGIN
     StaticJsonDocument<96> out;
+    ELECTROCSE_JSON_QUIET_END
     out["v"] = version;
     out["n"] = attempts;
 
@@ -1209,7 +1213,9 @@ static DeserializationError ecseParseReply(Stream& body, JsonDocument& into) {
      * The filter is therefore a v6 necessity rather than an improvement, which
      * is why v7 above does without it.
      */
+    ELECTROCSE_JSON_QUIET_BEGIN
     StaticJsonDocument<96> filter;
+    ELECTROCSE_JSON_QUIET_END
     filter["config"] = true;
 
     return deserializeJson(into, body, DeserializationOption::Filter(filter));
@@ -1426,7 +1432,9 @@ static bool fetchConfig() {
      * block sent there would reach the dashboard on half the estate and never
      * on the other half - the same trap documented above fetchConfig().
      */
+    ELECTROCSE_JSON_QUIET_BEGIN
     StaticJsonDocument<256> body;
+    ELECTROCSE_JSON_QUIET_END
     body["config_version"] = configVersion;
     body["meta"]["firmware_version"] = ECSE_FIRMWARE_BUILD;
 
@@ -1445,7 +1453,9 @@ static bool fetchConfig() {
      * rather than a saving - see ecseParseReply(). The document is declared
      * here because it has to outlive the call.
      */
+    ELECTROCSE_JSON_QUIET_BEGIN
     StaticJsonDocument<1536> reply;
+    ELECTROCSE_JSON_QUIET_END
 
     DeserializationError err = DeserializationError::Ok;
     int bodySize = -1;
@@ -1751,7 +1761,9 @@ static void rollback() {
         return;
     }
 
+    ELECTROCSE_JSON_QUIET_BEGIN
     StaticJsonDocument<1536> doc;
+    ELECTROCSE_JSON_QUIET_END
 
     if (deserializeJson(doc, good) != DeserializationError::Ok) {
         Serial.println(F("generic: saved config is unreadable; all pins released."));
@@ -1908,7 +1920,9 @@ void setup() {
     const String trial = readFile(ECSE_FILE_TRIAL);
 
     if (trial.length()) {
+        ELECTROCSE_JSON_QUIET_BEGIN
         StaticJsonDocument<96> doc;
+        ELECTROCSE_JSON_QUIET_END
 
         if (deserializeJson(doc, trial) == DeserializationError::Ok) {
             const uint32_t v = doc["v"] | 0UL;

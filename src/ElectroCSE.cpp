@@ -214,7 +214,12 @@ String ElectroCseClass::buildBody() {
      * after a couple of days. This one lives on the stack and costs nothing to
      * release. It also still compiles under ArduinoJson 6, which the README
      * promises. Do not "fix" the warning by dropping the size parameter.
+     *
+     * The QUIET pair around this block is why a sketch compiles clean; the
+     * reasoning, and what to do when ArduinoJson 8 removes these, is in
+     * ElectroCSE_Json.h.
      */
+    ELECTROCSE_JSON_QUIET_BEGIN
     StaticJsonDocument<640> doc;
     JsonArray readings = doc.createNestedArray("readings");
 
@@ -237,6 +242,7 @@ String ElectroCseClass::buildBody() {
 
     String body;
     serializeJson(doc, body);
+    ELECTROCSE_JSON_QUIET_END
 
     return body;
 }

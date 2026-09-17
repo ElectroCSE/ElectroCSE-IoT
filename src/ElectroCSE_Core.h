@@ -56,7 +56,7 @@
 #define ELECTROCSE_CORE_H
 
 #include <Arduino.h>
-#include <ArduinoJson.h>
+#include "ElectroCSE_Json.h"   // ArduinoJson, plus the v6/v7 deprecation seam
 
 /*
  * The dashboard, unless the sketch said otherwise BEFORE the include.
